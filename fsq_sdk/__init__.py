@@ -22,7 +22,7 @@ Example usage:
     >>> 
     >>> # Add a block with data
     >>> data = np.random.rand(100, 100).astype(np.float32)
-    >>> block = add_block(frame, fsq, x=0, y=0, size_top=100, size_bottom=100, data=data)
+    >>> block = add_block(frame, fsq, x=0, y=0, width=100, height=100, data=data)
     >>> 
     >>> # Write to disk
     >>> write_fsq(fsq, 'output.fsq', include_index=True)
@@ -58,7 +58,16 @@ from .decoder import (
     read_fsq,
     get_frame,
     get_block,
-    get_frame_by_id_fast
+    get_frame_by_id_fast,
+    FSQMMapReader
+)
+
+# Import logging utilities
+from .logging_config import (
+    get_logger,
+    set_log_level,
+    enable_console_logging,
+    disable_logging
 )
 
 # Define public API
@@ -82,4 +91,11 @@ __all__ = [
     'get_frame',
     'get_block',
     'get_frame_by_id_fast',
+    'FSQMMapReader',
+    
+    # Logging utilities
+    'get_logger',
+    'set_log_level',
+    'enable_console_logging',
+    'disable_logging',
 ]

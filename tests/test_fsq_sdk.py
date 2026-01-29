@@ -8,6 +8,7 @@ import pytest
 import numpy as np
 import os
 import tempfile
+import logging
 from fsq_sdk import (
     create_fsq_file,
     add_frame,
@@ -19,7 +20,12 @@ from fsq_sdk import (
     get_frame_by_id_fast,
     FSQFile,
     FSQFrame,
-    FSQBlock
+    FSQBlock,
+    FSQMMapReader,
+    get_logger,
+    set_log_level,
+    enable_console_logging,
+    disable_logging
 )
 
 
@@ -73,12 +79,12 @@ class TestEncoding:
         frame = add_frame(fsq, frame_id=0)
         
         data = np.random.rand(100, 100).astype(np.float32)
-        block = add_block(frame, fsq, x=0, y=0, size_top=100, size_bottom=100, data=data)
+        block = add_block(frame, fsq, x=0, y=0, width=100, height=100, data=data)
         
         assert block.x == 0
         assert block.y == 0
-        assert block.size_top == 100
-        assert block.size_bottom == 100
+        assert block.width == 100
+        assert block.height == 100
         assert block.data.shape == (100, 100)
         assert np.array_equal(block.data, data)
         assert len(frame.blocks) == 1
@@ -92,11 +98,11 @@ class TestEncoding:
         
         # Block would exceed width
         with pytest.raises(ValueError):
-            add_block(frame, fsq, x=400, y=0, size_top=200, size_bottom=200, data=data)
+            add_block(frame, fsq, x=400, y=0, width=200, height=200, data=data)
         
         # Block would exceed height
         with pytest.raises(ValueError):
-            add_block(frame, fsq, x=0, y=400, size_top=200, size_bottom=200, data=data)
+            add_block(frame, fsq, x=0, y=400, width=200, height=200, data=data)
     
     def test_add_block_wrong_data_shape(self):
         """Test that wrong data shape raises error."""
@@ -106,7 +112,7 @@ class TestEncoding:
         data = np.random.rand(50, 50).astype(np.float32)
         
         with pytest.raises(ValueError):
-            add_block(frame, fsq, x=0, y=0, size_top=100, size_bottom=100, data=data)
+            add_block(frame, fsq, x=0, y=0, width=100, height=100, data=data)
 
 
 class TestRoundTrip:
@@ -122,7 +128,7 @@ class TestRoundTrip:
             frame = add_frame(fsq, frame_id=0)
             
             data = np.arange(100 * 100, dtype=np.float32).reshape(100, 100)
-            add_block(frame, fsq, x=0, y=0, size_top=100, size_bottom=100, data=data)
+            add_block(frame, fsq, x=0, y=0, width=100, height=100, data=data)
             
             # Write to disk
             write_fsq(fsq, filepath, include_index=True)
@@ -142,8 +148,8 @@ class TestRoundTrip:
             block_read = get_block(frame_read, block_index=0)
             assert block_read.x == 0
             assert block_read.y == 0
-            assert block_read.size_top == 100
-            assert block_read.size_bottom == 100
+            assert block_read.width == 100
+            assert block_read.height == 100
             assert np.array_equal(block_read.data, data)
     
     def test_multiple_frames_and_blocks(self):
@@ -157,18 +163,18 @@ class TestRoundTrip:
             # Frame 0 with 2 blocks
             frame0 = add_frame(fsq, frame_id=0)
             data0_0 = np.ones((100, 100), dtype=np.float32) * 1.0
-            add_block(frame0, fsq, x=0, y=0, size_top=100, size_bottom=100, data=data0_0)
+            add_block(frame0, fsq, x=0, y=0, width=100, height=100, data=data0_0)
             
             data0_1 = np.ones((50, 75), dtype=np.float32) * 2.0
-            add_block(frame0, fsq, x=100, y=0, size_top=50, size_bottom=75, data=data0_1)
+            add_block(frame0, fsq, x=100, y=0, width=50, height=75, data=data0_1)
             
             # Frame 1 with 2 blocks
             frame1 = add_frame(fsq, frame_id=1)
             data1_0 = np.ones((80, 90), dtype=np.float32) * 3.0
-            add_block(frame1, fsq, x=0, y=100, size_top=80, size_bottom=90, data=data1_0)
+            add_block(frame1, fsq, x=0, y=100, width=80, height=90, data=data1_0)
             
             data1_1 = np.ones((120, 130), dtype=np.float32) * 4.0
-            add_block(frame1, fsq, x=200, y=200, size_top=120, size_bottom=130, data=data1_1)
+            add_block(frame1, fsq, x=200, y=200, width=120, height=130, data=data1_1)
             
             # Write to disk
             write_fsq(fsq, filepath, include_index=True)
@@ -210,7 +216,7 @@ class TestRoundTrip:
             frame = add_frame(fsq, frame_id=0)
             
             data = np.random.rand(50, 60).astype(np.float32)
-            add_block(frame, fsq, x=0, y=0, size_top=50, size_bottom=60, data=data)
+            add_block(frame, fsq, x=0, y=0, width=50, height=60, data=data)
             
             # Write without index
             write_fsq(fsq, filepath, include_index=False)
@@ -237,7 +243,7 @@ class TestRoundTrip:
             for i in range(5):
                 frame = add_frame(fsq, frame_id=i)
                 data = np.ones((50, 50), dtype=np.float32) * float(i)
-                add_block(frame, fsq, x=0, y=0, size_top=50, size_bottom=50, data=data)
+                add_block(frame, fsq, x=0, y=0, width=50, height=50, data=data)
             
             # Write with index
             write_fsq(fsq, filepath, include_index=True)
@@ -269,7 +275,7 @@ class TestValidation:
         # Wrong shape
         with pytest.raises(ValueError):
             FSQBlock(
-                x=0, y=0, size_top=10, size_bottom=10,
+                x=0, y=0, width=10, height=10,
                 data_bytes=400,
                 data=np.zeros((5, 5), dtype=np.float32)
             )
@@ -277,7 +283,7 @@ class TestValidation:
         # Wrong data type
         with pytest.raises(ValueError):
             FSQBlock(
-                x=0, y=0, size_top=10, size_bottom=10,
+                x=0, y=0, width=10, height=10,
                 data_bytes=400,
                 data=np.zeros((10, 10), dtype=np.float64)
             )
@@ -285,7 +291,7 @@ class TestValidation:
         # Wrong data_bytes
         with pytest.raises(ValueError):
             FSQBlock(
-                x=0, y=0, size_top=10, size_bottom=10,
+                x=0, y=0, width=10, height=10,
                 data_bytes=100,  # Should be 400
                 data=np.zeros((10, 10), dtype=np.float32)
             )
@@ -308,7 +314,7 @@ class TestValidation:
         fsq = create_fsq_file(max_width=256, max_height=256)
         frame = add_frame(fsq, frame_id=0)
         data = np.zeros((10, 10), dtype=np.float32)
-        add_block(frame, fsq, x=0, y=0, size_top=10, size_bottom=10, data=data)
+        add_block(frame, fsq, x=0, y=0, width=10, height=10, data=data)
         
         with pytest.raises(ValueError):
             get_block(frame, block_index=5)
@@ -324,7 +330,7 @@ class TestDataTypes:
         
         # Use list of lists
         data_list = [[1.0, 2.0], [3.0, 4.0]]
-        block = add_block(frame, fsq, x=0, y=0, size_top=2, size_bottom=2, data=data_list)
+        block = add_block(frame, fsq, x=0, y=0, width=2, height=2, data=data_list)
         
         assert isinstance(block.data, np.ndarray)
         assert block.data.dtype == np.float32
@@ -336,7 +342,7 @@ class TestDataTypes:
         frame = add_frame(fsq, frame_id=0)
         
         data_float64 = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64)
-        block = add_block(frame, fsq, x=0, y=0, size_top=2, size_bottom=2, data=data_float64)
+        block = add_block(frame, fsq, x=0, y=0, width=2, height=2, data=data_float64)
         
         assert block.data.dtype == np.float32
 
@@ -353,7 +359,7 @@ class TestEdgeCases:
             frame = add_frame(fsq, frame_id=0)
             
             data = np.array([[42.0]], dtype=np.float32)
-            add_block(frame, fsq, x=0, y=0, size_top=1, size_bottom=1, data=data)
+            add_block(frame, fsq, x=0, y=0, width=1, height=1, data=data)
             
             write_fsq(fsq, filepath)
             fsq_read = read_fsq(filepath)
@@ -368,7 +374,7 @@ class TestEdgeCases:
         
         # Add block at maximum position
         data = np.ones((1, 1), dtype=np.float32)
-        block = add_block(frame, fsq, x=1023, y=1023, size_top=1, size_bottom=1, data=data)
+        block = add_block(frame, fsq, x=1023, y=1023, width=1, height=1, data=data)
         
         assert block.x == 1023
         assert block.y == 1023
@@ -384,6 +390,139 @@ class TestEdgeCases:
             fsq_read = read_fsq(filepath)
             assert fsq_read.total_frames == 0
             assert len(fsq_read.frames) == 0
+
+
+class TestMMapReader:
+    """Test memory-mapped file reader."""
+    
+    def test_mmap_basic_read(self):
+        """Test basic mmap reading functionality."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filepath = os.path.join(tmpdir, 'test_mmap.fsq')
+            
+            # Create file
+            fsq = create_fsq_file(max_width=256, max_height=256)
+            frame = add_frame(fsq, frame_id=0)
+            data = np.arange(50 * 50, dtype=np.float32).reshape(50, 50)
+            add_block(frame, fsq, x=0, y=0, width=50, height=50, data=data)
+            write_fsq(fsq, filepath, include_index=True)
+            
+            # Read with mmap
+            with FSQMMapReader(filepath) as reader:
+                assert reader.total_frames == 1
+                assert reader.max_width == 256
+                assert reader.max_height == 256
+                
+                frame_read = reader.get_frame(0)
+                assert frame_read.frame_id == 0
+                assert frame_read.num_blocks == 1
+                
+                block = reader.get_block(frame_read, 0)
+                assert np.array_equal(block.data, data)
+    
+    def test_mmap_multiple_frames(self):
+        """Test mmap reading with multiple frames."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filepath = os.path.join(tmpdir, 'test_mmap_multi.fsq')
+            
+            # Create file with multiple frames
+            fsq = create_fsq_file(max_width=256, max_height=256)
+            for i in range(5):
+                frame = add_frame(fsq, frame_id=i)
+                data = np.ones((20, 20), dtype=np.float32) * float(i)
+                add_block(frame, fsq, x=0, y=0, width=20, height=20, data=data)
+            write_fsq(fsq, filepath, include_index=True)
+            
+            # Read with mmap and access specific frames
+            with FSQMMapReader(filepath) as reader:
+                assert reader.total_frames == 5
+                
+                # Access frame 3 directly
+                frame3 = reader.get_frame(3)
+                block = reader.get_block(frame3, 0)
+                assert np.all(block.data == 3.0)
+                
+                # Access frame 0
+                frame0 = reader.get_frame(0)
+                block = reader.get_block(frame0, 0)
+                assert np.all(block.data == 0.0)
+    
+    def test_mmap_cache(self):
+        """Test mmap frame caching."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filepath = os.path.join(tmpdir, 'test_mmap_cache.fsq')
+            
+            # Create file
+            fsq = create_fsq_file(max_width=256, max_height=256)
+            frame = add_frame(fsq, frame_id=0)
+            data = np.ones((10, 10), dtype=np.float32)
+            add_block(frame, fsq, x=0, y=0, width=10, height=10, data=data)
+            write_fsq(fsq, filepath, include_index=True)
+            
+            with FSQMMapReader(filepath) as reader:
+                # Read frame (should cache)
+                frame1 = reader.get_frame(0, use_cache=True)
+                frame2 = reader.get_frame(0, use_cache=True)
+                
+                # Should be the same object from cache
+                assert frame1 is frame2
+                
+                # Clear cache
+                reader.clear_cache()
+                
+                # Read again (should be new object)
+                frame3 = reader.get_frame(0, use_cache=True)
+                assert frame1 is not frame3
+    
+    def test_mmap_invalid_frame_id(self):
+        """Test mmap with invalid frame ID."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filepath = os.path.join(tmpdir, 'test_mmap_invalid.fsq')
+            
+            fsq = create_fsq_file(max_width=256, max_height=256)
+            frame = add_frame(fsq, frame_id=0)
+            data = np.ones((10, 10), dtype=np.float32)
+            add_block(frame, fsq, x=0, y=0, width=10, height=10, data=data)
+            write_fsq(fsq, filepath, include_index=True)
+            
+            with FSQMMapReader(filepath) as reader:
+                with pytest.raises(ValueError):
+                    reader.get_frame(999)
+
+
+class TestLogging:
+    """Test logging functionality."""
+    
+    def test_get_logger(self):
+        """Test getting SDK logger."""
+        logger = get_logger()
+        assert logger.name == 'fsq_sdk'
+        
+        encoder_logger = get_logger('encoder')
+        assert encoder_logger.name == 'fsq_sdk.encoder'
+    
+    def test_set_log_level(self):
+        """Test setting log level."""
+        original_level = get_logger().level
+        
+        set_log_level(logging.DEBUG)
+        assert get_logger().level == logging.DEBUG
+        
+        set_log_level(logging.WARNING)
+        assert get_logger().level == logging.WARNING
+        
+        # Restore original
+        set_log_level(original_level)
+    
+    def test_disable_logging(self):
+        """Test disabling logging."""
+        original_level = get_logger().level
+        
+        disable_logging()
+        assert get_logger().level > logging.CRITICAL
+        
+        # Restore
+        set_log_level(original_level)
 
 
 if __name__ == '__main__':

@@ -1,12 +1,17 @@
-"""
-Decoder module for FSQ file format.
+"""Decoder module for FSQ file format.
 
 This module provides functions to read FSQ files from disk and parse them
 into Python objects for easy access to frames and blocks.
+
+Features:
+    - Standard file I/O for full file reading
+    - Memory-mapped (mmap) support for efficient access to large files
+    - Index-based fast frame access
 """
 
 import os
-from typing import Optional, Dict, Tuple
+import mmap
+from typing import Optional, Dict, Tuple, Union
 from .models import FSQFile, FSQFrame, FSQBlock
 from .utils import (
     unpack_file_header,
@@ -18,6 +23,10 @@ from .utils import (
     FRAME_HEADER_SIZE,
     BLOCK_HEADER_SIZE
 )
+from .logging_config import get_logger
+
+# Module logger
+_logger = get_logger('decoder')
 
 
 def read_fsq(filename: str, use_index: bool = True) -> FSQFile:
@@ -38,6 +47,8 @@ def read_fsq(filename: str, use_index: bool = True) -> FSQFile:
     """
     if not os.path.exists(filename):
         raise FileNotFoundError(f"File not found: {filename}")
+    
+    _logger.info(f"Reading FSQ file: {filename}")
     
     with open(filename, 'rb') as f:
         # Read and parse file header
@@ -70,6 +81,7 @@ def read_fsq(filename: str, use_index: bool = True) -> FSQFile:
         if use_index and index_offset > 0:
             index_dict = _read_index(f, index_offset, total_frames)
             fsq_file.index = index_dict
+            _logger.debug(f"Loaded index with {len(index_dict)} entries")
         
         # Read frames
         if index_dict and use_index:
@@ -78,6 +90,11 @@ def read_fsq(filename: str, use_index: bool = True) -> FSQFile:
         else:
             # Sequential read
             fsq_file.frames = _read_frames_sequential(f, total_frames)
+        
+        _logger.info(
+            f"Successfully read FSQ file: {total_frames} frames, "
+            f"max_dims={max_width}x{max_height}"
+        )
         
         return fsq_file
 
@@ -208,7 +225,7 @@ def _read_block(f) -> Optional[FSQBlock]:
     if len(block_header_data) < BLOCK_HEADER_SIZE:
         return None
     
-    x, y, size_top, size_bottom, data_bytes = unpack_block_header(block_header_data)
+    x, y, width, height, data_bytes = unpack_block_header(block_header_data)
     
     # Read block data
     data_raw = f.read(data_bytes)
@@ -217,13 +234,13 @@ def _read_block(f) -> Optional[FSQBlock]:
             f"Insufficient block data: expected {data_bytes} bytes, got {len(data_raw)}"
         )
     
-    data = unpack_block_data(data_raw, size_top, size_bottom)
+    data = unpack_block_data(data_raw, width, height)
     
     block = FSQBlock(
         x=x,
         y=y,
-        size_top=size_top,
-        size_bottom=size_bottom,
+        width=width,
+        height=height,
         data_bytes=data_bytes,
         data=data
     )
@@ -327,3 +344,252 @@ def get_frame_by_id_fast(filename: str, frame_id: int) -> FSQFrame:
             raise ValueError(f"Failed to read frame {frame_id} at offset {offset}")
         
         return frame
+
+
+class FSQMMapReader:
+    """
+    Memory-mapped reader for FSQ files.
+    
+    This class provides efficient, memory-mapped access to FSQ files, which is
+    particularly useful for large files where loading everything into memory
+    would be impractical.
+    
+    The reader keeps the file memory-mapped and only reads data when accessed,
+    making it suitable for random access patterns and large datasets.
+    
+    Usage:
+        >>> with FSQMMapReader('large_file.fsq') as reader:
+        ...     frame = reader.get_frame(10)
+        ...     block = reader.get_block(frame, 0)
+        ...     print(block.data.shape)
+    
+    Attributes:
+        filename: Path to the FSQ file
+        fsq_file: FSQFile object with metadata (frames list may be empty until accessed)
+    """
+    
+    def __init__(self, filename: str):
+        """
+        Initialize the memory-mapped reader.
+        
+        Args:
+            filename: Path to .fsq file
+        
+        Raises:
+            FileNotFoundError: If file doesn't exist
+            ValueError: If file format is invalid
+        """
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"File not found: {filename}")
+        
+        self.filename = filename
+        self._file = None
+        self._mmap = None
+        self._index_dict: Optional[Dict[int, Tuple[int, int]]] = None
+        self.fsq_file: Optional[FSQFile] = None
+        self._frame_cache: Dict[int, FSQFrame] = {}
+    
+    def __enter__(self) -> 'FSQMMapReader':
+        """Open the file and create memory map."""
+        self._file = open(self.filename, 'rb')
+        self._mmap = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
+        self._read_header()
+        _logger.info(f"Opened FSQ file with mmap: {self.filename}")
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Close the memory map and file."""
+        self.close()
+        return False
+    
+    def close(self):
+        """Close the memory map and file handle."""
+        if self._mmap is not None:
+            self._mmap.close()
+            self._mmap = None
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+        self._frame_cache.clear()
+        _logger.debug(f"Closed mmap reader for {self.filename}")
+    
+    def _read_header(self):
+        """Read and parse the file header."""
+        header_data = self._mmap[:FILE_HEADER_SIZE]
+        
+        (magic, version, header_size, max_width, max_height, total_frames,
+         dtype, reserved1, index_offset, reserved2) = unpack_file_header(header_data)
+        
+        self.fsq_file = FSQFile(
+            magic=magic,
+            version=version,
+            header_size=header_size,
+            max_width=max_width,
+            max_height=max_height,
+            total_frames=total_frames,
+            dtype=dtype,
+            reserved1=reserved1,
+            index_offset=index_offset,
+            reserved2=reserved2
+        )
+        
+        # Read index if available
+        if index_offset > 0:
+            self._index_dict = self._read_index_mmap(index_offset, total_frames)
+            self.fsq_file.index = self._index_dict
+    
+    def _read_index_mmap(self, index_offset: int, total_frames: int) -> Dict[int, Tuple[int, int]]:
+        """Read frame index from memory-mapped file."""
+        index_dict = {}
+        
+        for i in range(total_frames):
+            entry_offset = index_offset + (i * 12)
+            entry_data = self._mmap[entry_offset:entry_offset + 12]
+            if len(entry_data) < 12:
+                break
+            
+            frame_id, offset = unpack_index_entry(entry_data)
+            index_dict[frame_id] = (offset, 0)
+        
+        return index_dict
+    
+    def _read_frame_at_offset(self, offset: int) -> FSQFrame:
+        """Read a frame from a specific offset in the memory-mapped file."""
+        # Read frame header
+        frame_header_data = self._mmap[offset:offset + FRAME_HEADER_SIZE]
+        if len(frame_header_data) < FRAME_HEADER_SIZE:
+            raise ValueError(f"Insufficient data for frame header at offset {offset}")
+        
+        frame_id, num_blocks, frame_size_bytes = unpack_frame_header(frame_header_data)
+        
+        frame = FSQFrame(
+            frame_id=frame_id,
+            num_blocks=num_blocks,
+            frame_size_bytes=frame_size_bytes
+        )
+        
+        # Read blocks
+        current_offset = offset + FRAME_HEADER_SIZE
+        
+        for _ in range(num_blocks):
+            # Read block header
+            block_header_data = self._mmap[current_offset:current_offset + BLOCK_HEADER_SIZE]
+            if len(block_header_data) < BLOCK_HEADER_SIZE:
+                raise ValueError(f"Insufficient data for block header at offset {current_offset}")
+            
+            x, y, width, height, data_bytes = unpack_block_header(block_header_data)
+            current_offset += BLOCK_HEADER_SIZE
+            
+            # Read block data
+            data_raw = self._mmap[current_offset:current_offset + data_bytes]
+            if len(data_raw) < data_bytes:
+                raise ValueError(
+                    f"Insufficient block data: expected {data_bytes} bytes, "
+                    f"got {len(data_raw)}"
+                )
+            
+            data = unpack_block_data(data_raw, width, height)
+            current_offset += data_bytes
+            
+            block = FSQBlock(
+                x=x,
+                y=y,
+                width=width,
+                height=height,
+                data_bytes=data_bytes,
+                data=data
+            )
+            
+            frame.blocks.append(block)
+        
+        return frame
+    
+    def get_frame(self, frame_id: int, use_cache: bool = True) -> FSQFrame:
+        """
+        Get a specific frame by ID using memory-mapped access.
+        
+        Args:
+            frame_id: Frame identifier
+            use_cache: Whether to cache the frame for future access (default True)
+        
+        Returns:
+            FSQFrame object
+        
+        Raises:
+            ValueError: If frame_id is invalid or reader is not open
+        """
+        if self._mmap is None:
+            raise ValueError("Reader is not open. Use 'with' statement or call open().")
+        
+        if frame_id < 0 or frame_id >= self.fsq_file.total_frames:
+            raise ValueError(
+                f"Invalid frame_id: {frame_id} (file has {self.fsq_file.total_frames} frames)"
+            )
+        
+        # Check cache first
+        if use_cache and frame_id in self._frame_cache:
+            return self._frame_cache[frame_id]
+        
+        # Use index if available
+        if self._index_dict and frame_id in self._index_dict:
+            offset, _ = self._index_dict[frame_id]
+        else:
+            # Calculate offset by sequential scanning (less efficient)
+            offset = FILE_HEADER_SIZE
+            for i in range(frame_id):
+                frame_header_data = self._mmap[offset:offset + FRAME_HEADER_SIZE]
+                _, _, frame_size_bytes = unpack_frame_header(frame_header_data)
+                offset += frame_size_bytes
+        
+        frame = self._read_frame_at_offset(offset)
+        
+        if use_cache:
+            self._frame_cache[frame_id] = frame
+        
+        return frame
+    
+    def get_block(self, frame: FSQFrame, block_index: int) -> FSQBlock:
+        """
+        Get a specific block from a frame.
+        
+        Args:
+            frame: FSQFrame object
+            block_index: Block index (0-based)
+        
+        Returns:
+            FSQBlock object
+        
+        Raises:
+            ValueError: If block_index is invalid
+        """
+        if block_index < 0 or block_index >= len(frame.blocks):
+            raise ValueError(
+                f"Invalid block_index: {block_index} (frame has {len(frame.blocks)} blocks)"
+            )
+        
+        return frame.blocks[block_index]
+    
+    def clear_cache(self):
+        """Clear the frame cache to free memory."""
+        self._frame_cache.clear()
+    
+    @property
+    def total_frames(self) -> int:
+        """Get the total number of frames in the file."""
+        if self.fsq_file is None:
+            raise ValueError("Reader is not open.")
+        return self.fsq_file.total_frames
+    
+    @property
+    def max_width(self) -> int:
+        """Get the maximum frame width."""
+        if self.fsq_file is None:
+            raise ValueError("Reader is not open.")
+        return self.fsq_file.max_width
+    
+    @property
+    def max_height(self) -> int:
+        """Get the maximum frame height."""
+        if self.fsq_file is None:
+            raise ValueError("Reader is not open.")
+        return self.fsq_file.max_height

@@ -15,31 +15,39 @@ class FSQBlock:
     """
     Represents a single block within a frame.
     
+    A block is a rectangular region of float32 data positioned at (x, y) within
+    the frame coordinate system. The data is stored as a 2D numpy array.
+    
     Attributes:
-        x: X-coordinate position in the frame
-        y: Y-coordinate position in the frame
-        size_top: Width of the block (S dimension)
-        size_bottom: Height of the block (T dimension)
-        data_bytes: Size of data in bytes (should be S * T * 4)
-        data: 2D numpy array of float32 values, shape (size_top, size_bottom)
+        x: X-coordinate (column) position of the block's top-left corner in the frame
+        y: Y-coordinate (row) position of the block's top-left corner in the frame
+        width: Number of columns in the block (horizontal extent)
+        height: Number of rows in the block (vertical extent)
+        data_bytes: Size of data in bytes (should be width * height * 4)
+        data: 2D numpy array of float32 values, shape (width, height)
+    
+    Note:
+        The block must fit within the frame's max_width and max_height:
+        - x + width <= max_width
+        - y + height <= max_height
     """
     x: int
     y: int
-    size_top: int
-    size_bottom: int
+    width: int  # formerly size_top
+    height: int  # formerly size_bottom
     data_bytes: int
-    data: np.ndarray  # shape (size_top, size_bottom), dtype float32
+    data: np.ndarray  # shape (width, height), dtype float32
     
     def __post_init__(self):
         """Validate block data after initialization."""
-        expected_bytes = self.size_top * self.size_bottom * 4
+        expected_bytes = self.width * self.height * 4
         if self.data_bytes != expected_bytes:
             raise ValueError(
                 f"Data bytes mismatch: expected {expected_bytes}, got {self.data_bytes}"
             )
-        if self.data.shape != (self.size_top, self.size_bottom):
+        if self.data.shape != (self.width, self.height):
             raise ValueError(
-                f"Data shape mismatch: expected ({self.size_top}, {self.size_bottom}), "
+                f"Data shape mismatch: expected ({self.width}, {self.height}), "
                 f"got {self.data.shape}"
             )
         if self.data.dtype != np.float32:

@@ -1,5 +1,4 @@
-"""
-Encoder module for FSQ file format.
+"""Encoder module for FSQ file format.
 
 This module provides functions to create FSQ files, frames, and blocks,
 and write them to disk in the FSQ binary format.
@@ -17,6 +16,10 @@ from .utils import (
     FRAME_HEADER_SIZE,
     BLOCK_HEADER_SIZE
 )
+from .logging_config import get_logger
+
+# Module logger
+_logger = get_logger('encoder')
 
 
 def create_fsq_file(max_width: int, max_height: int, dtype: int = 1) -> FSQFile:
@@ -40,6 +43,8 @@ def create_fsq_file(max_width: int, max_height: int, dtype: int = 1) -> FSQFile:
         raise ValueError(f"max_height must be between 1 and 1024, got {max_height}")
     if dtype != 1:
         raise ValueError(f"Only dtype=1 (float32) is supported, got {dtype}")
+    
+    _logger.debug(f"Creating FSQ file with max_width={max_width}, max_height={max_height}")
     
     return FSQFile(
         max_width=max_width,
@@ -76,6 +81,7 @@ def add_frame(file: FSQFile, frame_id: int) -> FSQFrame:
     )
     
     file.add_frame(frame)
+    _logger.debug(f"Added frame {frame_id} to file (total frames: {len(file.frames)})")
     return frame
 
 
@@ -84,45 +90,45 @@ def add_block(
     file: FSQFile,
     x: int,
     y: int,
-    size_top: int,
-    size_bottom: int,
+    width: int,
+    height: int,
     data: Union[List[List[float]], np.ndarray]
 ) -> FSQBlock:
     """
     Create and add a new block to a frame.
-    
+
     Args:
         frame: FSQFrame object to add block to
         file: FSQFile object (for max_width/max_height validation)
-        x: X-coordinate position in frame
-        y: Y-coordinate position in frame
-        size_top: Width of block (S dimension)
-        size_bottom: Height of block (T dimension)
-        data: 2D array of float values, shape (size_top, size_bottom)
-    
+        x: X-coordinate (column) position of block top-left corner
+        y: Y-coordinate (row) position of block top-left corner
+        width: Number of columns in the block (horizontal extent)
+        height: Number of rows in the block (vertical extent)
+        data: Two-dimensional array of float values, shape (width, height)
+
     Returns:
         Created FSQBlock object
-    
+
     Raises:
         ValueError: If constraints are violated
     """
     # Validate position and size constraints
     if x < 0 or y < 0:
         raise ValueError(f"Block position must be non-negative: x={x}, y={y}")
-    if x + size_top > file.max_width:
+    if x + width > file.max_width:
         raise ValueError(
-            f"Block exceeds max_width: x={x} + size_top={size_top} = {x + size_top} "
+            f"Block exceeds max_width: x={x} + width={width} = {x + width} "
             f"> {file.max_width}"
         )
-    if y + size_bottom > file.max_height:
+    if y + height > file.max_height:
         raise ValueError(
-            f"Block exceeds max_height: y={y} + size_bottom={size_bottom} "
-            f"= {y + size_bottom} > {file.max_height}"
+            f"Block exceeds max_height: y={y} + height={height} "
+            f"= {y + height} > {file.max_height}"
         )
-    if size_top <= 0 or size_bottom <= 0:
+    if width <= 0 or height <= 0:
         raise ValueError(
-            f"Block dimensions must be positive: size_top={size_top}, "
-            f"size_bottom={size_bottom}"
+            f"Block dimensions must be positive: width={width}, "
+            f"height={height}"
         )
     
     # Convert data to numpy array if needed
@@ -133,19 +139,19 @@ def add_block(
             data = data.astype(np.float32)
     
     # Validate data shape
-    if data.shape != (size_top, size_bottom):
+    if data.shape != (width, height):
         raise ValueError(
-            f"Data shape mismatch: expected ({size_top}, {size_bottom}), "
+            f"Data shape mismatch: expected ({width}, {height}), "
             f"got {data.shape}"
         )
     
-    data_bytes = size_top * size_bottom * 4
+    data_bytes = width * height * 4
     
     block = FSQBlock(
         x=x,
         y=y,
-        size_top=size_top,
-        size_bottom=size_bottom,
+        width=width,
+        height=height,
         data_bytes=data_bytes,
         data=data
     )
@@ -154,6 +160,11 @@ def add_block(
     
     # Update frame size
     frame.frame_size_bytes += BLOCK_HEADER_SIZE + data_bytes
+    
+    _logger.debug(
+        f"Added block to frame {frame.frame_id}: pos=({x}, {y}), "
+        f"size={width}x{height}, data_bytes={data_bytes}"
+    )
     
     return block
 
@@ -170,6 +181,8 @@ def write_fsq(file: FSQFile, filename: str, include_index: bool = True):
     Raises:
         IOError: If file cannot be written
     """
+    _logger.info(f"Writing FSQ file to '{filename}' (frames={file.total_frames}, include_index={include_index})")
+
     with open(filename, 'wb') as f:
         # Calculate index offset if including index
         index_offset = 0
@@ -219,8 +232,8 @@ def write_fsq(file: FSQFile, filename: str, include_index: bool = True):
                 block_header = pack_block_header(
                     x=block.x,
                     y=block.y,
-                    size_top=block.size_top,
-                    size_bottom=block.size_bottom,
+                    width=block.width,
+                    height=block.height,
                     data_bytes=block.data_bytes
                 )
                 f.write(block_header)
@@ -234,5 +247,8 @@ def write_fsq(file: FSQFile, filename: str, include_index: bool = True):
         # Write index if requested
         if include_index:
             for frame_id, offset in frame_offsets:
-                index_entry = pack_index_entry(frame_id, offset, 0)
+                index_entry = pack_index_entry(frame_id, offset)
                 f.write(index_entry)
+            _logger.debug(f"Wrote index with {len(frame_offsets)} entries")
+    
+    _logger.info(f"Successfully wrote FSQ file: {filename}")

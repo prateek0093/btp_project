@@ -126,22 +126,22 @@ def unpack_frame_header(data: bytes) -> Tuple[int, int, int]:
 
 
 def pack_block_header(
-    x: int, y: int, size_top: int, size_bottom: int, data_bytes: int
+    x: int, y: int, width: int, height: int, data_bytes: int
 ) -> bytes:
     """
     Pack block header into bytes.
     
     Args:
-        x: X-coordinate
-        y: Y-coordinate
-        size_top: Width (S dimension)
-        size_bottom: Height (T dimension)
+        x: X-coordinate (column position)
+        y: Y-coordinate (row position)
+        width: Number of columns (horizontal extent)
+        height: Number of rows (vertical extent)
         data_bytes: Size of data in bytes
     
     Returns:
         Packed bytes of block header
     """
-    return struct.pack(BLOCK_HEADER_FMT, x, y, size_top, size_bottom, data_bytes)
+    return struct.pack(BLOCK_HEADER_FMT, x, y, width, height, data_bytes)
 
 
 def unpack_block_header(data: bytes) -> Tuple[int, int, int, int, int]:
@@ -152,7 +152,7 @@ def unpack_block_header(data: bytes) -> Tuple[int, int, int, int, int]:
         data: Bytes containing block header (at least 16 bytes)
     
     Returns:
-        Tuple of (x, y, size_top, size_bottom, data_bytes)
+        Tuple of (x, y, width, height, data_bytes)
     """
     if len(data) < BLOCK_HEADER_SIZE:
         raise ValueError(
@@ -183,19 +183,19 @@ def pack_block_data(data: np.ndarray) -> bytes:
     return data.tobytes()
 
 
-def unpack_block_data(data: bytes, size_top: int, size_bottom: int) -> np.ndarray:
+def unpack_block_data(data: bytes, width: int, height: int) -> np.ndarray:
     """
     Unpack block data from bytes into 2D float32 array.
     
     Args:
         data: Bytes containing block data
-        size_top: Width (S dimension)
-        size_bottom: Height (T dimension)
+        width: Number of columns (horizontal extent)
+        height: Number of rows (vertical extent)
     
     Returns:
-        2D numpy array of shape (size_top, size_bottom), dtype float32
+        2D numpy array of shape (width, height), dtype float32
     """
-    expected_bytes = size_top * size_bottom * 4
+    expected_bytes = width * height * 4
     if len(data) < expected_bytes:
         raise ValueError(
             f"Insufficient data for block: expected {expected_bytes} bytes, "
@@ -205,18 +205,17 @@ def unpack_block_data(data: bytes, size_top: int, size_bottom: int) -> np.ndarra
     # Create array from bytes (little-endian float32)
     arr = np.frombuffer(data[:expected_bytes], dtype='<f4')
     
-    # Reshape to 2D (size_top, size_bottom)
-    return arr.reshape(size_top, size_bottom)
+    # Reshape to 2D (width, height)
+    return arr.reshape(width, height)
 
 
-def pack_index_entry(frame_id: int, offset: int, size: int) -> bytes:
+def pack_index_entry(frame_id: int, offset: int) -> bytes:
     """
     Pack a single index entry.
     
     Args:
         frame_id: Frame identifier
         offset: Byte offset to frame
-        size: Size of frame in bytes
     
     Returns:
         Packed bytes (12 bytes: I + Q)

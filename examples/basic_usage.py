@@ -30,13 +30,13 @@ def example_encode():
     
     # Block 1: 100x100 gradient
     data1 = np.linspace(0, 100, 100*100).reshape(100, 100).astype(np.float32)
-    block1 = add_block(frame0, fsq, x=0, y=0, size_top=100, size_bottom=100, data=data1)
-    print(f"  Added block at ({block1.x}, {block1.y}), size {block1.size_top}x{block1.size_bottom}")
+    block1 = add_block(frame0, fsq, x=0, y=0, width=100, height=100, data=data1)
+    print(f"  Added block at ({block1.x}, {block1.y}), size {block1.width}x{block1.height}")
     
     # Block 2: 50x75 ones
     data2 = np.ones((50, 75), dtype=np.float32) * 42.0
-    block2 = add_block(frame0, fsq, x=100, y=0, size_top=50, size_bottom=75, data=data2)
-    print(f"  Added block at ({block2.x}, {block2.y}), size {block2.size_top}x{block2.size_bottom}")
+    block2 = add_block(frame0, fsq, x=100, y=0, width=50, height=75, data=data2)
+    print(f"  Added block at ({block2.x}, {block2.y}), size {block2.width}x{block2.height}")
     
     # Add Frame 1 with 1 block
     print("Adding Frame 1...")
@@ -44,8 +44,8 @@ def example_encode():
     
     # Block: 200x150 random values
     data3 = np.random.randn(200, 150).astype(np.float32)
-    block3 = add_block(frame1, fsq, x=0, y=100, size_top=200, size_bottom=150, data=data3)
-    print(f"  Added block at ({block3.x}, {block3.y}), size {block3.size_top}x{block3.size_bottom}")
+    block3 = add_block(frame1, fsq, x=0, y=100, width=200, height=150, data=data3)
+    print(f"  Added block at ({block3.x}, {block3.y}), size {block3.width}x{block3.height}")
     
     # Write to disk with index
     print("\nWriting to 'example.fsq'...")
@@ -79,7 +79,7 @@ def example_decode():
     for i in range(frame0.num_blocks):
         block = get_block(frame0, block_index=i)
         print(f"  Block {i}: pos=({block.x}, {block.y}), "
-              f"size={block.size_top}x{block.size_bottom}, "
+              f"size={block.width}x{block.height}, "
               f"data_shape={block.data.shape}, "
               f"mean={block.data.mean():.2f}")
     
@@ -91,7 +91,7 @@ def example_decode():
     for i in range(frame1.num_blocks):
         block = get_block(frame1, block_index=i)
         print(f"  Block {i}: pos=({block.x}, {block.y}), "
-              f"size={block.size_top}x{block.size_bottom}, "
+              f"size={block.width}x{block.height}, "
               f"data_shape={block.data.shape}, "
               f"mean={block.data.mean():.2f}, std={block.data.std():.2f}")
 
@@ -112,6 +112,50 @@ def example_fast_access():
     print(f"  Block data range: [{block.data.min():.2f}, {block.data.max():.2f}]")
 
 
+def example_mmap_reader():
+    """Example: Memory-mapped file access for large files."""
+    from fsq_sdk import FSQMMapReader
+    
+    print("\n" + "="*50)
+    print("Memory-mapped reader example...")
+    
+    # Use the context manager for automatic cleanup
+    with FSQMMapReader('example.fsq') as reader:
+        print(f"\nFile info via mmap:")
+        print(f"  Total frames: {reader.total_frames}")
+        print(f"  Max dimensions: {reader.max_width} x {reader.max_height}")
+        
+        # Access specific frame without loading entire file
+        frame = reader.get_frame(0)
+        print(f"\n  Frame 0: {frame.num_blocks} blocks")
+        
+        block = reader.get_block(frame, 0)
+        print(f"  First block shape: {block.data.shape}")
+
+
+def example_logging():
+    """Example: Using the logging system."""
+    import logging
+    from fsq_sdk import enable_console_logging, set_log_level, disable_logging
+    
+    print("\n" + "="*50)
+    print("Logging example...")
+    
+    # Enable console logging with DEBUG level
+    enable_console_logging(logging.DEBUG)
+    print("\nLogging enabled at DEBUG level. Creating a small FSQ file...")
+    
+    # This will produce log output
+    fsq = create_fsq_file(max_width=64, max_height=64)
+    frame = add_frame(fsq, frame_id=0)
+    data = np.ones((10, 10), dtype=np.float32)
+    add_block(frame, fsq, x=0, y=0, width=10, height=10, data=data)
+    
+    # Disable logging
+    disable_logging()
+    print("\nLogging disabled.")
+
+
 def main():
     """Run all examples."""
     print("FSQ SDK Example\n")
@@ -125,8 +169,14 @@ def main():
     # Fast access example
     example_fast_access()
     
+    # Memory-mapped reader example
+    example_mmap_reader()
+    
+    # Logging example
+    example_logging()
+    
     print("\n" + "="*50)
-    print("Example completed successfully!")
+    print("All examples completed successfully!")
     print("\nGenerated file: example.fsq")
 
 
